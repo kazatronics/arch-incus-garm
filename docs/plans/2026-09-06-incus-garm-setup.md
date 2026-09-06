@@ -343,11 +343,13 @@ git commit -m "feat: config template and shared shell library"
 
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=lib/common.sh disable=SC1091
 source lib/common.sh
 
 require_root
 load_config
 
+ran_any=false
 for step in steps/[0-9]*.sh; do
     if [[ -n ${1:-} && $(basename "$step") != "$1"* ]]; then
         continue
@@ -355,8 +357,13 @@ for step in steps/[0-9]*.sh; do
     log "─── ${step#steps/} ───"
     # shellcheck source=/dev/null
     source "$step"
+    ran_any=true
 done
-log "done"
+if [[ $ran_any == true ]]; then
+    log "done"
+else
+    warn "no step matches prefix '${1:-}' — nothing ran"
+fi
 ```
 
 Steps are *sourced* so they share config and helpers; each must be a no-op when its work is already done.
@@ -368,7 +375,7 @@ Steps are *sourced* so they share config and helpers; each must be a no-op when 
 # Repo packages + AUR packages (garm-bin, garm-provider-incus-bin).
 
 log "installing repo packages"
-pacman -S --needed --noconfirm incus btrfs-progs git base-devel
+pacman -S --needed --noconfirm incus btrfs-progs git base-devel python
 
 aur_install() {
     local pkg=$1
@@ -382,11 +389,15 @@ aur_install() {
         as_user yay -S --noconfirm "$pkg"
     else
         log "no AUR helper — building $pkg with makepkg as $SUDO_USER"
-        local bdir
+        local bdir pkgfile
         bdir=$(as_user mktemp -d)
         as_user git clone "https://aur.archlinux.org/$pkg.git" "$bdir/$pkg"
         (cd "$bdir/$pkg" && as_user makepkg -s --noconfirm)
-        pacman -U --noconfirm "$bdir/$pkg"/*.pkg.tar.zst
+        for pkgfile in "$bdir/$pkg"/*.pkg.tar.zst; do
+            if [[ $pkgfile != *-debug-* ]]; then
+                pacman -U --noconfirm "$pkgfile"
+            fi
+        done
         rm -rf "$bdir"
     fi
 }
@@ -445,9 +456,17 @@ if incus_missing network "$INCUS_BRIDGE"; then
         ipv4.address="$INCUS_BRIDGE_ADDR" ipv4.nat=true ipv6.address=none
 fi
 
-if ! incus profile show default | grep -q 'pool:'; then
-    log "wiring default profile to pool and bridge"
+if incus profile device get default root type &>/dev/null; then
+    existing_pool=$(incus profile device get default root pool)
+    [[ $existing_pool == "$INCUS_STORAGE_POOL" ]] || die \
+        "default profile root device uses pool '$existing_pool', not '$INCUS_STORAGE_POOL' — remove the device or set INCUS_STORAGE_POOL to match"
+else
+    log "wiring default profile root to pool $INCUS_STORAGE_POOL"
     incus profile device add default root disk path=/ pool="$INCUS_STORAGE_POOL"
+fi
+
+if ! incus profile device get default eth0 type &>/dev/null; then
+    log "wiring default profile eth0 to bridge $INCUS_BRIDGE"
     incus profile device add default eth0 nic network="$INCUS_BRIDGE" name=eth0
 fi
 ```
@@ -517,7 +536,7 @@ if incus_missing instance "$REGISTRY_INSTANCE"; then
     log "launching pull-through registry container"
     incus launch images:alpine/3.22 "$REGISTRY_INSTANCE"
     incus storage volume attach "$INCUS_STORAGE_POOL" "$REGISTRY_VOLUME" \
-        "$REGISTRY_INSTANCE" /var/lib/docker-registry
+        "$REGISTRY_INSTANCE" registry-data /var/lib/docker-registry
 
     # wait for network inside the container
     for _ in $(seq 30); do
@@ -543,10 +562,21 @@ chown -R docker-registry:docker-registry /var/lib/docker-registry
 rc-update add docker-registry default
 service docker-registry restart
 EOF
+elif incus list -f csv -c ns | grep -qxF "${REGISTRY_INSTANCE},STOPPED"; then
+    log "starting stopped registry container"
+    incus start "$REGISTRY_INSTANCE"
 fi
 
-incus exec "$REGISTRY_INSTANCE" -- wget -qO- http://localhost:5000/v2/ >/dev/null \
-    || die "registry is not answering on :5000"
+# The registry may still be coming up (OpenRC start is asynchronous).
+registry_ok=false
+for _ in $(seq 15); do
+    if incus exec "$REGISTRY_INSTANCE" -- wget -qO- http://localhost:5000/v2/ &>/dev/null; then
+        registry_ok=true
+        break
+    fi
+    sleep 1
+done
+[[ $registry_ok == true ]] || die "registry is not answering on :5000"
 log "registry OK at ${REGISTRY_INSTANCE}.incus:5000"
 ```
 
@@ -575,21 +605,27 @@ if incus_missing profile runner-ct; then
 fi
 incus profile set runner-ct security.nesting=true
 incus profile set runner-ct limits.cpu="$RUNNER_CT_CPU" limits.memory="$RUNNER_CT_MEM"
-incus profile device add runner-ct root disk path=/ pool="$INCUS_STORAGE_POOL" 2>/dev/null || true
-incus profile device add runner-ct eth0 nic network="$INCUS_BRIDGE" name=eth0 2>/dev/null || true
-incus profile device add runner-ct scratch disk \
-    pool="$INCUS_STORAGE_POOL" source="$SCRATCH_VOLUME" path="$SCRATCH_MOUNT" 2>/dev/null || true
+incus profile device get runner-ct root type &>/dev/null || \
+    incus profile device add runner-ct root disk path=/ pool="$INCUS_STORAGE_POOL"
+incus profile device get runner-ct eth0 type &>/dev/null || \
+    incus profile device add runner-ct eth0 nic network="$INCUS_BRIDGE" name=eth0
+incus profile device get runner-ct scratch type &>/dev/null || \
+    incus profile device add runner-ct scratch disk \
+        pool="$INCUS_STORAGE_POOL" source="$SCRATCH_VOLUME" path="$SCRATCH_MOUNT"
 
 if incus_missing profile runner-vm; then
     log "creating profile runner-vm"
     incus profile create runner-vm
 fi
 incus profile set runner-vm limits.cpu="$RUNNER_VM_CPU" limits.memory="$RUNNER_VM_MEM"
-incus profile device add runner-vm root disk path=/ pool="$INCUS_STORAGE_POOL" \
-    size="$RUNNER_VM_ROOT" 2>/dev/null || true
-incus profile device add runner-vm eth0 nic network="$INCUS_BRIDGE" name=eth0 2>/dev/null || true
-incus profile device add runner-vm scratch disk \
-    pool="$INCUS_STORAGE_POOL" source="$SCRATCH_VOLUME" path="$SCRATCH_MOUNT" 2>/dev/null || true
+incus profile device get runner-vm root type &>/dev/null || \
+    incus profile device add runner-vm root disk path=/ pool="$INCUS_STORAGE_POOL" \
+        size="$RUNNER_VM_ROOT"
+incus profile device get runner-vm eth0 type &>/dev/null || \
+    incus profile device add runner-vm eth0 nic network="$INCUS_BRIDGE" name=eth0
+incus profile device get runner-vm scratch type &>/dev/null || \
+    incus profile device add runner-vm scratch disk \
+        pool="$INCUS_STORAGE_POOL" source="$SCRATCH_VOLUME" path="$SCRATCH_MOUNT"
 ```
 
 **Step 2: Verify and commit**
@@ -611,10 +647,17 @@ git add steps/50-profiles.sh && git commit -m "feat: runner-ct and runner-vm fla
 # /etc/garm/config.toml plus two provider configs (container + VM). Secrets
 # are generated once; an existing config.toml is left untouched.
 
+# The configs carry secrets — never create them world-readable, even for the
+# instant before the explicit chmod below. Steps are sourced, so restore the
+# previous umask once the files are in place.
+prev_umask=$(umask)
+umask 077
+
 if [[ ! -f /etc/garm/config.toml ]]; then
     log "generating /etc/garm/config.toml"
-    jwt_secret=$(tr -dc 'a-zA-Z0-9!@#$%^&*()_+' </dev/urandom | head -c 64)
-    db_passphrase=$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32)
+    # head bounds the urandom read so tr isn't SIGPIPE-killed under pipefail
+    jwt_secret=$(head -c 4096 /dev/urandom | tr -dc 'a-zA-Z0-9!@#$%^&*()_+' | cut -c 1-64)
+    db_passphrase=$(head -c 4096 /dev/urandom | tr -dc 'a-zA-Z0-9' | cut -c 1-32)
 
     cat > /etc/garm/config.toml <<EOF
 [default]
@@ -687,14 +730,22 @@ write_provider_config /etc/garm/garm-provider-incus-vm.toml virtual-machine
 
 chown -R garm:garm /etc/garm
 chmod 0640 /etc/garm/*.toml
+umask "$prev_umask"
 
 log "starting garm"
 systemctl enable --now garm.service
+# Probe the API server root: curl fails only while nothing is listening —
+# any HTTP response (even 404) means garm is up.
+garm_up=false
 for _ in $(seq 30); do
-    curl -sf "http://127.0.0.1:${GARM_BIND_PORT}/api/v1/metrics" &>/dev/null && break
+    if curl -s -o /dev/null "http://127.0.0.1:${GARM_BIND_PORT}/"; then
+        garm_up=true
+        break
+    fi
     systemctl is-active --quiet garm.service || die "garm.service failed — journalctl -u garm"
     sleep 1
 done
+[[ $garm_up == true ]] || die "garm did not answer on :${GARM_BIND_PORT} after 30s"
 ```
 
 **Step 2: Verify and commit**
@@ -723,9 +774,10 @@ fi
 
 garm_cli() { as_user garm-cli "$@"; }
 
-if ! garm_cli profile list 2>/dev/null | grep -q .; then
+if ! garm_cli profile list 2>/dev/null | grep -qw "$GARM_CONTROLLER_NAME"; then
     if [[ -z $GARM_ADMIN_PASSWORD ]]; then
-        GARM_ADMIN_PASSWORD=$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 24)
+        # head bounds the urandom read so tr isn't SIGPIPE-killed under pipefail
+        GARM_ADMIN_PASSWORD=$(head -c 4096 /dev/urandom | tr -dc 'a-zA-Z0-9' | cut -c 1-24)
         log "generated admin password: $GARM_ADMIN_PASSWORD  (save this!)"
     fi
     log "initializing controller $GARM_CONTROLLER_NAME"
@@ -743,26 +795,41 @@ if ! garm_cli github credentials list | grep -qw "$GITHUB_CRED_NAME"; then
         --endpoint github.com
 fi
 
-webhook_flags=()
-[[ $GITHUB_INSTALL_WEBHOOK == "true" ]] && webhook_flags=(--random-webhook-secret --install-webhook)
+# GARM requires a webhook secret on every entity even when it never installs
+# the webhook — only the actual installation is optional.
+webhook_flags=(--random-webhook-secret)
+[[ $GITHUB_INSTALL_WEBHOOK == "true" ]] && webhook_flags+=(--install-webhook)
+
+# Entity lookups go through --format json; names are handed to python via the
+# environment so they can't break out of the expression.
+org_id() {
+    garm_cli org list --format json | GITHUB_ORG="$GITHUB_ORG" python -c \
+        "import json,os,sys; print(next((o['id'] for o in json.load(sys.stdin) or [] if o['name'] == os.environ['GITHUB_ORG']), ''))"
+}
+repo_id() {
+    garm_cli repo list -o "$GITHUB_ORG" -n "$GITHUB_REPO" --format json \
+        | GITHUB_REPO="$GITHUB_REPO" python -c \
+            "import json,os,sys; print(next((r['id'] for r in json.load(sys.stdin) or [] if r['name'] == os.environ['GITHUB_REPO']), ''))"
+}
 
 if [[ $GITHUB_ENTITY_TYPE == "org" ]]; then
-    if ! garm_cli org list | grep -qw "$GITHUB_ORG"; then
+    entity_id=$(org_id)
+    if [[ -z $entity_id ]]; then
         garm_cli org add --name "$GITHUB_ORG" \
             --credentials "$GITHUB_CRED_NAME" "${webhook_flags[@]}"
+        entity_id=$(org_id)
     fi
-    entity_id=$(garm_cli org list -f json | as_user python -c \
-        "import json,sys; print([o['id'] for o in json.load(sys.stdin) if o['name']=='$GITHUB_ORG'][0])")
     entity_flag="--org"
 else
-    if ! garm_cli repo list | grep -qw "$GITHUB_REPO"; then
+    entity_id=$(repo_id)
+    if [[ -z $entity_id ]]; then
         garm_cli repo add --owner "$GITHUB_ORG" --name "$GITHUB_REPO" \
             --credentials "$GITHUB_CRED_NAME" "${webhook_flags[@]}"
+        entity_id=$(repo_id)
     fi
-    entity_id=$(garm_cli repo list -f json | as_user python -c \
-        "import json,sys; print([r['id'] for r in json.load(sys.stdin) if r['name']=='$GITHUB_REPO'][0])")
     entity_flag="--repo"
 fi
+[[ -n $entity_id ]] || die "could not resolve the $GITHUB_ENTITY_TYPE id from garm-cli"
 
 # Runners that build images get docker plus a daemon.json pointing at the
 # pull-through cache, injected before the runner installs.

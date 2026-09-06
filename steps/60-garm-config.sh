@@ -2,6 +2,12 @@
 # /etc/garm/config.toml plus two provider configs (container + VM). Secrets
 # are generated once; an existing config.toml is left untouched.
 
+# The configs carry secrets — never create them world-readable, even for the
+# instant before the explicit chmod below. Steps are sourced, so restore the
+# previous umask once the files are in place.
+prev_umask=$(umask)
+umask 077
+
 if [[ ! -f /etc/garm/config.toml ]]; then
     log "generating /etc/garm/config.toml"
     # head bounds the urandom read so tr isn't SIGPIPE-killed under pipefail
@@ -79,11 +85,19 @@ write_provider_config /etc/garm/garm-provider-incus-vm.toml virtual-machine
 
 chown -R garm:garm /etc/garm
 chmod 0640 /etc/garm/*.toml
+umask "$prev_umask"
 
 log "starting garm"
 systemctl enable --now garm.service
+# Probe the API server root: curl fails only while nothing is listening —
+# any HTTP response (even 404) means garm is up.
+garm_up=false
 for _ in $(seq 30); do
-    curl -sf "http://127.0.0.1:${GARM_BIND_PORT}/api/v1/metrics" &>/dev/null && break
+    if curl -s -o /dev/null "http://127.0.0.1:${GARM_BIND_PORT}/"; then
+        garm_up=true
+        break
+    fi
     systemctl is-active --quiet garm.service || die "garm.service failed — journalctl -u garm"
     sleep 1
 done
+[[ $garm_up == true ]] || die "garm did not answer on :${GARM_BIND_PORT} after 30s"

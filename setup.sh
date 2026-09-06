@@ -12,6 +12,7 @@ source lib/common.sh
 require_root
 load_config
 
+ran_any=false
 for step in steps/[0-9]*.sh; do
     if [[ -n ${1:-} && $(basename "$step") != "$1"* ]]; then
         continue
@@ -19,5 +20,10 @@ for step in steps/[0-9]*.sh; do
     log "─── ${step#steps/} ───"
     # shellcheck source=/dev/null
     source "$step"
+    ran_any=true
 done
-log "done"
+if [[ $ran_any == true ]]; then
+    log "done"
+else
+    warn "no step matches prefix '${1:-}' — nothing ran"
+fi

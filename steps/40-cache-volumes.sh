@@ -20,7 +20,7 @@ if incus_missing instance "$REGISTRY_INSTANCE"; then
     log "launching pull-through registry container"
     incus launch images:alpine/3.22 "$REGISTRY_INSTANCE"
     incus storage volume attach "$INCUS_STORAGE_POOL" "$REGISTRY_VOLUME" \
-        "$REGISTRY_INSTANCE" /var/lib/docker-registry
+        "$REGISTRY_INSTANCE" registry-data /var/lib/docker-registry
 
     # wait for network inside the container
     for _ in $(seq 30); do
@@ -46,8 +46,19 @@ chown -R docker-registry:docker-registry /var/lib/docker-registry
 rc-update add docker-registry default
 service docker-registry restart
 EOF
+elif incus list -f csv -c ns | grep -qxF "${REGISTRY_INSTANCE},STOPPED"; then
+    log "starting stopped registry container"
+    incus start "$REGISTRY_INSTANCE"
 fi
 
-incus exec "$REGISTRY_INSTANCE" -- wget -qO- http://localhost:5000/v2/ >/dev/null \
-    || die "registry is not answering on :5000"
+# The registry may still be coming up (OpenRC start is asynchronous).
+registry_ok=false
+for _ in $(seq 15); do
+    if incus exec "$REGISTRY_INSTANCE" -- wget -qO- http://localhost:5000/v2/ &>/dev/null; then
+        registry_ok=true
+        break
+    fi
+    sleep 1
+done
+[[ $registry_ok == true ]] || die "registry is not answering on :5000"
 log "registry OK at ${REGISTRY_INSTANCE}.incus:5000"

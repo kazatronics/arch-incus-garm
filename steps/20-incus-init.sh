@@ -32,8 +32,16 @@ if incus_missing network "$INCUS_BRIDGE"; then
         ipv4.address="$INCUS_BRIDGE_ADDR" ipv4.nat=true ipv6.address=none
 fi
 
-if ! incus profile show default | grep -q 'pool:'; then
-    log "wiring default profile to pool and bridge"
+if incus profile device get default root type &>/dev/null; then
+    existing_pool=$(incus profile device get default root pool)
+    [[ $existing_pool == "$INCUS_STORAGE_POOL" ]] || die \
+        "default profile root device uses pool '$existing_pool', not '$INCUS_STORAGE_POOL' — remove the device or set INCUS_STORAGE_POOL to match"
+else
+    log "wiring default profile root to pool $INCUS_STORAGE_POOL"
     incus profile device add default root disk path=/ pool="$INCUS_STORAGE_POOL"
+fi
+
+if ! incus profile device get default eth0 type &>/dev/null; then
+    log "wiring default profile eth0 to bridge $INCUS_BRIDGE"
     incus profile device add default eth0 nic network="$INCUS_BRIDGE" name=eth0
 fi

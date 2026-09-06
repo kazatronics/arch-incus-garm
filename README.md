@@ -35,7 +35,9 @@ registry cache.
 - A regular user with sudo; run everything via `sudo`, not from a root
   login (AUR builds drop back to your user, makepkg refuses to run as root)
 - Optionally `paru` or `yay` — without one, the AUR packages are cloned and
-  built with plain makepkg
+  built with plain makepkg; that fallback runs `makepkg -s` as your user, so
+  your user needs working sudo (cached or passwordless) mid-run to install
+  build dependencies
 
 ## Quickstart
 

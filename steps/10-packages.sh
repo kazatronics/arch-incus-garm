@@ -2,7 +2,7 @@
 # Repo packages + AUR packages (garm-bin, garm-provider-incus-bin).
 
 log "installing repo packages"
-pacman -S --needed --noconfirm incus btrfs-progs git base-devel
+pacman -S --needed --noconfirm incus btrfs-progs git base-devel python
 
 aur_install() {
     local pkg=$1
@@ -16,11 +16,15 @@ aur_install() {
         as_user yay -S --noconfirm "$pkg"
     else
         log "no AUR helper — building $pkg with makepkg as $SUDO_USER"
-        local bdir
+        local bdir pkgfile
         bdir=$(as_user mktemp -d)
         as_user git clone "https://aur.archlinux.org/$pkg.git" "$bdir/$pkg"
         (cd "$bdir/$pkg" && as_user makepkg -s --noconfirm)
-        pacman -U --noconfirm "$bdir/$pkg"/*.pkg.tar.zst
+        for pkgfile in "$bdir/$pkg"/*.pkg.tar.zst; do
+            if [[ $pkgfile != *-debug-* ]]; then
+                pacman -U --noconfirm "$pkgfile"
+            fi
+        done
         rm -rf "$bdir"
     fi
 }

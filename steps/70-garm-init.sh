@@ -9,7 +9,7 @@ fi
 
 garm_cli() { as_user garm-cli "$@"; }
 
-if ! garm_cli profile list 2>/dev/null | grep -q .; then
+if ! garm_cli profile list 2>/dev/null | grep -qw "$GARM_CONTROLLER_NAME"; then
     if [[ -z $GARM_ADMIN_PASSWORD ]]; then
         # head bounds the urandom read so tr isn't SIGPIPE-killed under pipefail
         GARM_ADMIN_PASSWORD=$(head -c 4096 /dev/urandom | tr -dc 'a-zA-Z0-9' | cut -c 1-24)
@@ -30,26 +30,41 @@ if ! garm_cli github credentials list | grep -qw "$GITHUB_CRED_NAME"; then
         --endpoint github.com
 fi
 
-webhook_flags=()
-[[ $GITHUB_INSTALL_WEBHOOK == "true" ]] && webhook_flags=(--random-webhook-secret --install-webhook)
+# GARM requires a webhook secret on every entity even when it never installs
+# the webhook — only the actual installation is optional.
+webhook_flags=(--random-webhook-secret)
+[[ $GITHUB_INSTALL_WEBHOOK == "true" ]] && webhook_flags+=(--install-webhook)
+
+# Entity lookups go through --format json; names are handed to python via the
+# environment so they can't break out of the expression.
+org_id() {
+    garm_cli org list --format json | GITHUB_ORG="$GITHUB_ORG" python -c \
+        "import json,os,sys; print(next((o['id'] for o in json.load(sys.stdin) or [] if o['name'] == os.environ['GITHUB_ORG']), ''))"
+}
+repo_id() {
+    garm_cli repo list -o "$GITHUB_ORG" -n "$GITHUB_REPO" --format json \
+        | GITHUB_REPO="$GITHUB_REPO" python -c \
+            "import json,os,sys; print(next((r['id'] for r in json.load(sys.stdin) or [] if r['name'] == os.environ['GITHUB_REPO']), ''))"
+}
 
 if [[ $GITHUB_ENTITY_TYPE == "org" ]]; then
-    if ! garm_cli org list | grep -qw "$GITHUB_ORG"; then
+    entity_id=$(org_id)
+    if [[ -z $entity_id ]]; then
         garm_cli org add --name "$GITHUB_ORG" \
             --credentials "$GITHUB_CRED_NAME" "${webhook_flags[@]}"
+        entity_id=$(org_id)
     fi
-    entity_id=$(garm_cli org list -f json | as_user python -c \
-        "import json,sys; print([o['id'] for o in json.load(sys.stdin) if o['name']=='$GITHUB_ORG'][0])")
     entity_flag="--org"
 else
-    if ! garm_cli repo list | grep -qw "$GITHUB_REPO"; then
+    entity_id=$(repo_id)
+    if [[ -z $entity_id ]]; then
         garm_cli repo add --owner "$GITHUB_ORG" --name "$GITHUB_REPO" \
             --credentials "$GITHUB_CRED_NAME" "${webhook_flags[@]}"
+        entity_id=$(repo_id)
     fi
-    entity_id=$(garm_cli repo list -f json | as_user python -c \
-        "import json,sys; print([r['id'] for r in json.load(sys.stdin) if r['name']=='$GITHUB_REPO'][0])")
     entity_flag="--repo"
 fi
+[[ -n $entity_id ]] || die "could not resolve the $GITHUB_ENTITY_TYPE id from garm-cli"
 
 # Runners that build images get docker plus a daemon.json pointing at the
 # pull-through cache, injected before the runner installs.

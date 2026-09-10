@@ -13,8 +13,24 @@ vm.max_map_count = 262144
 EOF
 sysctl -p /etc/sysctl.d/90-incus-garm.conf >/dev/null
 
+# Unprivileged containers need subordinate id ranges for root; the Arch
+# incus package does not create them (VMs work without, containers fail
+# with "System doesn't have a functional idmap setup").
+idmap_changed=0
+for f in /etc/subuid /etc/subgid; do
+    if ! grep -qs '^root:' "$f"; then
+        log "allocating root subordinate ids in $f"
+        printf 'root:1000000:1000000000\n' >> "$f"
+        idmap_changed=1
+    fi
+done
+
 log "enabling incus"
 systemctl enable --now incus.service
+if [[ $idmap_changed -eq 1 ]]; then
+    log "restarting incus to pick up idmap ranges"
+    systemctl restart incus.service
+fi
 incus admin waitready --timeout 60
 
 if incus_missing storage "$INCUS_STORAGE_POOL"; then

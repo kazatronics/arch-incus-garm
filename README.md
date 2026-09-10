@@ -93,6 +93,26 @@ tunnel or reverse proxy, point `GARM_URL` at the public endpoint, and set
 `GITHUB_INSTALL_WEBHOOK="true"` — or install the webhook by hand later with
 `garm-cli repo webhook install`.
 
+## Host firewall (ufw / firewalld)
+
+If the host runs a firewall, the runner bridge needs to be allowed through
+it — otherwise instances get an address but can't route out, DHCP/DNS from
+Incus's dnsmasq time out, and the tell-tale symptom is that pings work
+(ICMP is usually permitted by default) while every TCP/UDP connection
+hangs. For `ufw`, allow the bridge named in `config.env` (default
+`incusbr0`):
+
+```bash
+sudo ufw allow in on incusbr0
+sudo ufw route allow in on incusbr0
+sudo ufw route allow out on incusbr0
+```
+
+The first rule restores DHCP/DNS to guests; the two `route` rules let guest
+traffic through the FORWARD chain ufw otherwise drops. This also matters for
+GARM reachability: runners fetch their metadata and post callbacks to
+`GARM_URL` on the bridge address, so a blocked bridge breaks registration.
+
 ## Where secrets land
 
 - `config.env` — your `GITHUB_PAT`; gitignored, keep it that way

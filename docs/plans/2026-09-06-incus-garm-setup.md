@@ -426,6 +426,7 @@ git commit -m "feat: orchestrator and package installation step"
 # Kernel limits, incus daemon, btrfs storage pool, runner bridge, default profile.
 
 log "applying kernel limits for container density"
+install -d /etc/sysctl.d
 cat > /etc/sysctl.d/90-incus-garm.conf <<'EOF'
 fs.inotify.max_queued_events = 1048576
 fs.inotify.max_user_instances = 1048576
@@ -493,6 +494,7 @@ git add steps/20-incus-init.sh && git commit -m "feat: incus init step (btrfs po
 
 if ! id -nG garm 2>/dev/null | grep -qw incus-admin; then
     log "adding garm to incus-admin via sysusers.d"
+    install -d /etc/sysusers.d
     printf 'm garm incus-admin\n' > /etc/sysusers.d/garm-incus.conf
     systemd-sysusers
 fi

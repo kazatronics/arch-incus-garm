@@ -5,6 +5,7 @@
 
 if ! id -nG garm 2>/dev/null | grep -qw incus-admin; then
     log "adding garm to incus-admin via sysusers.d"
+    install -d /etc/sysusers.d
     printf 'm garm incus-admin\n' > /etc/sysusers.d/garm-incus.conf
     systemd-sysusers
 fi

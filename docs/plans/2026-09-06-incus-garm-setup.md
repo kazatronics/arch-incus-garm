@@ -275,7 +275,7 @@ RUNNER_IMAGE="images:ubuntu/24.04/cloud"
 
 ## GitHub wiring (step 70; skip the step entirely by leaving GITHUB_PAT empty)
 GITHUB_PAT=""
-GITHUB_CRED_NAME="kazw-pat"
+GITHUB_CRED_NAME="github-pat"
 GITHUB_ENTITY_TYPE="repo"           # repo | org
 GITHUB_ORG=""                       # org name (org mode) or repo owner (repo mode)
 GITHUB_REPO=""                      # repo name (repo mode only)

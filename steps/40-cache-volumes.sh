@@ -16,7 +16,7 @@ if ! incus storage volume show "$INCUS_STORAGE_POOL" "$REGISTRY_VOLUME" &>/dev/n
     incus storage volume create "$INCUS_STORAGE_POOL" "$REGISTRY_VOLUME" size="$REGISTRY_SIZE"
 fi
 
-if incus_missing instance "$REGISTRY_INSTANCE"; then
+if ! incus info "$REGISTRY_INSTANCE" &>/dev/null; then
     log "launching pull-through registry container"
     incus launch images:alpine/3.22 "$REGISTRY_INSTANCE"
     incus storage volume attach "$INCUS_STORAGE_POOL" "$REGISTRY_VOLUME" \

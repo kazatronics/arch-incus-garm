@@ -378,28 +378,35 @@ log "installing repo packages"
 pacman -S --needed --noconfirm incus btrfs-progs git base-devel python
 
 aur_install() {
-    local pkg=$1
+    local pkg=$1 bdir pkgfile deps
     if pacman -Qi "$pkg" &>/dev/null; then
         log "$pkg already installed"
         return 0
     fi
-    if command -v paru &>/dev/null; then
-        as_user paru -S --noconfirm "$pkg"
-    elif command -v yay &>/dev/null; then
-        as_user yay -S --noconfirm "$pkg"
-    else
-        log "no AUR helper — building $pkg with makepkg as $SUDO_USER"
-        local bdir pkgfile
-        bdir=$(as_user mktemp -d)
-        as_user git clone "https://aur.archlinux.org/$pkg.git" "$bdir/$pkg"
-        (cd "$bdir/$pkg" && as_user makepkg -s --noconfirm)
-        for pkgfile in "$bdir/$pkg"/*.pkg.tar.zst; do
-            if [[ $pkgfile != *-debug-* ]]; then
-                pacman -U --noconfirm "$pkgfile"
-            fi
-        done
-        rm -rf "$bdir"
+    # setup.sh runs as root, but makepkg refuses to run as root and AUR helpers
+    # (paru/yay) invoke sudo again from the dropped-privilege context. That
+    # nested sudo runs in a different tty/session than the login sudo, so it
+    # cannot reuse the cached credentials and re-prompts on every pacman call.
+    # Avoid it: read the deps and install them as root here (no nested sudo),
+    # build with makepkg as $SUDO_USER *without* -s so makepkg never calls sudo
+    # itself, then install the built package with pacman -U as root.
+    log "building $pkg with makepkg as $SUDO_USER"
+    bdir=$(as_user mktemp -d)
+    as_user git clone -q "https://aur.archlinux.org/$pkg.git" "$bdir/$pkg"
+    # Single quotes are deliberate: the arrays must expand inside the inner
+    # shell (running as the user, after sourcing the PKGBUILD), not out here.
+    # shellcheck disable=SC2016
+    deps=$(cd "$bdir/$pkg" && as_user bash -c 'source ./PKGBUILD; echo "${depends[*]} ${makedepends[*]}"')
+    if [[ -n ${deps// /} ]]; then
+        # shellcheck disable=SC2086
+        pacman -S --needed --noconfirm --asdeps $deps
     fi
+    (cd "$bdir/$pkg" && as_user makepkg --noconfirm)
+    for pkgfile in "$bdir/$pkg"/*.pkg.tar.zst; do
+        [[ $pkgfile == *-debug-* ]] && continue
+        pacman -U --noconfirm "$pkgfile"
+    done
+    rm -rf "$bdir"
 }
 
 aur_install garm-bin

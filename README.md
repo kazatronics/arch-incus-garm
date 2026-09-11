@@ -33,11 +33,12 @@ registry cache.
 - A fresh-ish Arch Linux host — the scripts install packages, write to
   `/etc/sysctl.d`, `/etc/sysusers.d`, and `/etc/garm`, and initialize Incus
 - A regular user with sudo; run everything via `sudo`, not from a root
-  login (AUR builds drop back to your user, makepkg refuses to run as root)
-- Optionally `paru` or `yay` — without one, the AUR packages are cloned and
-  built with plain makepkg; that fallback runs `makepkg -s` as your user, so
-  your user needs working sudo (cached or passwordless) mid-run to install
-  build dependencies
+  login (the AUR packages are built with makepkg, which refuses to run as
+  root, so step 10 drops back to your user for the build)
+- No AUR helper is required — `garm-bin` and `garm-provider-incus-bin` are
+  cloned from the AUR and built with plain makepkg. Build dependencies (if
+  any) are installed as root first, and the build itself never invokes sudo,
+  so you are only prompted for your password once, by the initial `sudo`
 
 ## Quickstart
 

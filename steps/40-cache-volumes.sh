@@ -51,6 +51,10 @@ elif incus list -f csv -c ns | grep -qxF "${REGISTRY_INSTANCE},STOPPED"; then
     incus start "$REGISTRY_INSTANCE"
 fi
 
+# Persistent service container: start it deterministically on every host boot,
+# not just when it happened to be running at the last daemon shutdown.
+incus config set "$REGISTRY_INSTANCE" boot.autostart=true
+
 # The registry may still be coming up (OpenRC start is asynchronous).
 registry_ok=false
 for _ in $(seq 15); do

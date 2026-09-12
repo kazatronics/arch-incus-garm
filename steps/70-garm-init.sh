@@ -1,11 +1,35 @@
 #!/bin/bash
 # One-time controller init and GitHub wiring. Entirely skipped when
-# GITHUB_PAT is empty so the infra steps can run standalone.
+# GITHUB_AUTH_TYPE is empty so the infra steps can run standalone.
+#
+# GARM authenticates to GitHub with either a GitHub App (recommended: installed
+# on the org, short-lived auto-refreshed tokens, least privilege) or a PAT. It
+# cannot use a runner *registration* token — GARM mints those itself for each
+# ephemeral runner, which requires admin-level credentials.
 
-if [[ -z $GITHUB_PAT ]]; then
-    warn "GITHUB_PAT empty — skipping garm bootstrap (rerun: sudo ./setup.sh 70)"
-    return 0
-fi
+case "$GITHUB_AUTH_TYPE" in
+    "")
+        warn "GITHUB_AUTH_TYPE empty — skipping garm bootstrap (rerun: sudo ./setup.sh 70)"
+        return 0
+        ;;
+    app)
+        [[ -n $GITHUB_APP_ID && -n $GITHUB_APP_INSTALLATION_ID && -n $GITHUB_APP_PRIVATE_KEY_PATH ]] ||
+            die "GITHUB_AUTH_TYPE=app needs GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY_PATH"
+        as_user test -r "$GITHUB_APP_PRIVATE_KEY_PATH" ||
+            die "app private key not readable by $SUDO_USER: $GITHUB_APP_PRIVATE_KEY_PATH"
+        cred_flags=(--auth-type app
+            --app-id "$GITHUB_APP_ID"
+            --app-installation-id "$GITHUB_APP_INSTALLATION_ID"
+            --private-key-path "$GITHUB_APP_PRIVATE_KEY_PATH")
+        ;;
+    pat)
+        [[ -n $GITHUB_PAT ]] || die "GITHUB_AUTH_TYPE=pat but GITHUB_PAT is empty"
+        cred_flags=(--auth-type pat --pat-oauth-token "$GITHUB_PAT")
+        ;;
+    *)
+        die "GITHUB_AUTH_TYPE must be 'app', 'pat', or empty (got: '$GITHUB_AUTH_TYPE')"
+        ;;
+esac
 
 garm_cli() { as_user garm-cli "$@"; }
 
@@ -22,12 +46,12 @@ if ! garm_cli profile list 2>/dev/null | grep -qw "$GARM_CONTROLLER_NAME"; then
 fi
 
 if ! garm_cli github credentials list | grep -qw "$GITHUB_CRED_NAME"; then
-    log "adding github credentials $GITHUB_CRED_NAME"
+    log "adding github credentials $GITHUB_CRED_NAME ($GITHUB_AUTH_TYPE)"
     garm_cli github credentials add \
         --name "$GITHUB_CRED_NAME" \
-        --description "PAT for $GITHUB_ORG" \
-        --auth-type pat --pat-oauth-token "$GITHUB_PAT" \
-        --endpoint github.com
+        --description "$GITHUB_AUTH_TYPE credential for $GITHUB_ORG" \
+        --endpoint github.com \
+        "${cred_flags[@]}"
 fi
 
 # GARM requires a webhook secret on every entity even when it never installs

@@ -273,10 +273,30 @@ RUNNER_VM_MEM="8GiB"
 RUNNER_VM_ROOT="20GiB"
 RUNNER_IMAGE="images:ubuntu/24.04/cloud"
 
-## GitHub wiring (step 70; skip the step entirely by leaving GITHUB_PAT empty)
+## GitHub wiring (step 70). Leave GITHUB_AUTH_TYPE empty to skip step 70 so the
+## infrastructure can be provisioned before any GitHub wiring exists.
+##
+## GARM authenticates with a GitHub App or a PAT — NOT a runner registration
+## token (GARM mints those itself per runner, which needs admin-level creds).
+## The App is recommended: installed on the org, short-lived auto-refreshed
+## tokens, least privilege.
+GITHUB_AUTH_TYPE=""                 # app | pat  (empty => skip step 70)
+GITHUB_CRED_NAME="github-app"
+
+# GitHub App (GITHUB_AUTH_TYPE=app). Create an org App with permissions:
+#   Repository:   Administration R/W, Metadata RO   (+ Webhooks R/W for auto-webhooks)
+#   Organization: Self-hosted runners R/W            (+ Webhooks R/W)
+# Install it on the org, generate a private key (.pem), then fill these in. The
+# key path must be readable by the user running setup.sh; GARM copies the key
+# into its own encrypted DB and only reads the file when the credential is added.
+GITHUB_APP_ID=""
+GITHUB_APP_INSTALLATION_ID=""
+GITHUB_APP_PRIVATE_KEY_PATH=""
+
+# Personal access token (GITHUB_AUTH_TYPE=pat)
 GITHUB_PAT=""
-GITHUB_CRED_NAME="github-pat"
-GITHUB_ENTITY_TYPE="repo"           # repo | org
+
+GITHUB_ENTITY_TYPE="org"            # org | repo
 GITHUB_ORG=""                       # org name (org mode) or repo owner (repo mode)
 GITHUB_REPO=""                      # repo name (repo mode only)
 # Webhooks need GARM_URL (or a tunnel) reachable from github.com.
@@ -794,12 +814,36 @@ git add steps/60-garm-config.sh && git commit -m "feat: garm + provider config g
 ```bash
 #!/bin/bash
 # One-time controller init and GitHub wiring. Entirely skipped when
-# GITHUB_PAT is empty so the infra steps can run standalone.
+# GITHUB_AUTH_TYPE is empty so the infra steps can run standalone.
+#
+# GARM authenticates to GitHub with either a GitHub App (recommended: installed
+# on the org, short-lived auto-refreshed tokens, least privilege) or a PAT. It
+# cannot use a runner *registration* token — GARM mints those itself for each
+# ephemeral runner, which requires admin-level credentials.
 
-if [[ -z $GITHUB_PAT ]]; then
-    warn "GITHUB_PAT empty — skipping garm bootstrap (rerun: sudo ./setup.sh 70)"
-    return 0
-fi
+case "$GITHUB_AUTH_TYPE" in
+    "")
+        warn "GITHUB_AUTH_TYPE empty — skipping garm bootstrap (rerun: sudo ./setup.sh 70)"
+        return 0
+        ;;
+    app)
+        [[ -n $GITHUB_APP_ID && -n $GITHUB_APP_INSTALLATION_ID && -n $GITHUB_APP_PRIVATE_KEY_PATH ]] ||
+            die "GITHUB_AUTH_TYPE=app needs GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY_PATH"
+        as_user test -r "$GITHUB_APP_PRIVATE_KEY_PATH" ||
+            die "app private key not readable by $SUDO_USER: $GITHUB_APP_PRIVATE_KEY_PATH"
+        cred_flags=(--auth-type app
+            --app-id "$GITHUB_APP_ID"
+            --app-installation-id "$GITHUB_APP_INSTALLATION_ID"
+            --private-key-path "$GITHUB_APP_PRIVATE_KEY_PATH")
+        ;;
+    pat)
+        [[ -n $GITHUB_PAT ]] || die "GITHUB_AUTH_TYPE=pat but GITHUB_PAT is empty"
+        cred_flags=(--auth-type pat --pat-oauth-token "$GITHUB_PAT")
+        ;;
+    *)
+        die "GITHUB_AUTH_TYPE must be 'app', 'pat', or empty (got: '$GITHUB_AUTH_TYPE')"
+        ;;
+esac
 
 garm_cli() { as_user garm-cli "$@"; }
 
@@ -816,12 +860,12 @@ if ! garm_cli profile list 2>/dev/null | grep -qw "$GARM_CONTROLLER_NAME"; then
 fi
 
 if ! garm_cli github credentials list | grep -qw "$GITHUB_CRED_NAME"; then
-    log "adding github credentials $GITHUB_CRED_NAME"
+    log "adding github credentials $GITHUB_CRED_NAME ($GITHUB_AUTH_TYPE)"
     garm_cli github credentials add \
         --name "$GITHUB_CRED_NAME" \
-        --description "PAT for $GITHUB_ORG" \
-        --auth-type pat --pat-oauth-token "$GITHUB_PAT" \
-        --endpoint github.com
+        --description "$GITHUB_AUTH_TYPE credential for $GITHUB_ORG" \
+        --endpoint github.com \
+        "${cred_flags[@]}"
 fi
 
 # GARM requires a webhook secret on every entity even when it never installs

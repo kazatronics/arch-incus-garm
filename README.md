@@ -44,7 +44,7 @@ registry cache.
 
 ```bash
 cp config.env.example config.env
-"$EDITOR" config.env        # at minimum: GITHUB_PAT and the entity settings
+"$EDITOR" config.env        # at minimum: GITHUB_AUTH_TYPE + credentials + entity
 sudo ./setup.sh
 ```
 
@@ -65,8 +65,23 @@ sudo ./setup.sh 40          # just the cache volumes / registry step
 | `60-garm-config.sh` | `/etc/garm/*.toml`, generated secrets, enables `garm.service` |
 | `70-garm-init.sh` | `garm-cli` init, GitHub credentials, repo/org, runner pools |
 
-Leaving `GITHUB_PAT` empty skips step 70 entirely, so the infrastructure
+Leaving `GITHUB_AUTH_TYPE` empty skips step 70 entirely, so the infrastructure
 can be provisioned before any GitHub wiring exists.
+
+## GitHub authentication
+
+GARM needs credentials that can *mint* runner registration tokens on demand —
+it cannot use a one-time runner registration token the way a manually
+registered runner does. So step 70 wires one of two `GITHUB_AUTH_TYPE`s:
+
+- **`app` (recommended)** — a GitHub App installed on the org. GARM uses
+  short-lived installation tokens that it refreshes itself, so there is no
+  long-lived secret in `config.env`. Create the App with **Repository:**
+  Administration R/W + Metadata RO (+ Webhooks R/W for auto-webhooks) and
+  **Organization:** Self-hosted runners R/W (+ Webhooks R/W), install it on the
+  org, then set `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, and
+  `GITHUB_APP_PRIVATE_KEY_PATH` (a `.pem` readable by the user running setup).
+- **`pat`** — a classic/fine-grained personal access token in `GITHUB_PAT`.
 
 ## Flavors are profiles
 
@@ -116,7 +131,10 @@ GARM reachability: runners fetch their metadata and post callbacks to
 
 ## Where secrets land
 
-- `config.env` — your `GITHUB_PAT`; gitignored, keep it that way
+- `config.env` — your GitHub credential (`GITHUB_PAT`, or the App's id /
+  installation id / private-key path); gitignored, keep it that way. With the
+  App, the private key itself stays wherever you put the `.pem`; GARM copies it
+  into its encrypted DB when the credential is added
 - `/etc/garm/config.toml` — generated JWT secret and database passphrase
   (owned by `garm`, mode 0640, left untouched on re-runs)
 - The admin password — printed **once** by step 70 when

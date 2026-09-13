@@ -61,6 +61,20 @@ CONTROLLER_CLIENT_CERT="/root/incus-client.crt"
 sanitize() { printf '%s' "${1//[^a-zA-Z0-9]/_}"; }
 ```
 
+**Step 2b (review fix): upgrade-safe defaults in `load_config()`.** A `config.env`
+created before these vars exist would trip `set -u` ("HOST_ROLE: unbound
+variable") on the next run. Immediately after `source "$cfg"` in `load_config()`,
+default the six new vars (and only those):
+
+```bash
+    HOST_ROLE="${HOST_ROLE:-controller}"
+    GARM_CLIENT_CERT="${GARM_CLIENT_CERT:-/etc/garm/incus-client.crt}"
+    GARM_CLIENT_KEY="${GARM_CLIENT_KEY:-/etc/garm/incus-client.key}"
+    REMOTE_HOSTS="${REMOTE_HOSTS:-}"
+    INCUS_HTTPS_ADDRESS="${INCUS_HTTPS_ADDRESS:-[::]:8443}"
+    CONTROLLER_CLIENT_CERT="${CONTROLLER_CLIENT_CERT:-/root/incus-client.crt}"
+```
+
 **Step 3: Verify + commit**
 
 ```bash
@@ -205,7 +219,7 @@ git commit -m "feat: gate garm-user step to the controller role"
 
 **Files:** Modify: `steps/60-garm-config.sh` (substantial rewrite)
 
-**Design:** config.toml becomes fully **regenerable** so adding a host is idempotent. Secrets are generated once into a sidecar (`/etc/garm/.garm-secrets`, `0600`) and reused, so regenerating config.toml never rotates the DB passphrase (which would break the encrypted DB). Providers: always the local pair; plus a pair per `REMOTE_HOSTS` entry whose server cert is present (missing cert ⇒ warn + skip, so a first controller run before the cert exchange still succeeds and you rerun `setup.sh 60` afterward). garm is restarted only if config.toml actually changed.
+**Design:** config.toml becomes fully **regenerable** so adding a host is idempotent. Secrets are generated once into a sidecar (`/etc/garm/.garm-secrets`, `0600` `root:root` — root reads it, garm never does) and reused, so regenerating config.toml never rotates the DB passphrase (which would break the encrypted DB). Providers: always the local pair; plus a pair per `REMOTE_HOSTS` entry whose server cert is present (missing cert ⇒ warn + skip, so a first controller run before the cert exchange still succeeds and you rerun `setup.sh 60` afterward). garm is restarted only if config.toml actually changed.
 
 **Step 1: Replace the whole file** with:
 
@@ -281,10 +295,14 @@ add_provider_block "local_ct" "Local Incus - containers" /etc/garm/garm-provider
 add_provider_block "local_vm" "Local Incus - VMs" /etc/garm/garm-provider-incus-vm.toml
 
 # one pair per reachable remote compute host
+# (REMOTE_HOSTS is a deliberately space-separated list — word-split it)
 for entry in $REMOTE_HOSTS; do
     IFS='|' read -r rname rurl rcert <<<"$entry"
-    if [[ ! -r $rcert ]]; then
-        warn "server cert for '$rname' missing at $rcert — skipping (copy it, then: sudo ./setup.sh 60)"
+    # (review fix) the provider reads this cert at runtime as the garm user, not
+    # root, so verify garm can read it — a root-only cert outside /etc/garm would
+    # pass a root readability check yet fail the provider later.
+    if ! sudo -u garm test -r "$rcert"; then
+        warn "server cert for '$rname' unreadable by garm at $rcert — skipping (copy it, then: sudo ./setup.sh 60)"
         continue
     fi
     tok=$(sanitize "$rname")
@@ -345,7 +363,12 @@ changed=1
 printf '%s\n' "$new" > /etc/garm/config.toml
 
 chown -R garm:garm /etc/garm
-chmod 0640 /etc/garm/*.toml /etc/garm/.garm-secrets
+# (review fix) the secrets sidecar is source'd by root every run and garm never
+# reads it (secrets reach garm via config.toml). Keep it root-only so a
+# compromised garm user cannot plant shell that runs as root on the next run.
+chown root:root /etc/garm/.garm-secrets
+chmod 0640 /etc/garm/*.toml
+chmod 0600 /etc/garm/.garm-secrets
 umask "$prev_umask"
 
 if [[ $changed -eq 1 ]]; then
@@ -388,7 +411,12 @@ providers=$(garm_cli provider list --format json |
 
 add_pool() {
     local provider=$1 flavor=$2 tags=$3
-    garm_cli pool list "$entity_flag" "$entity_id" 2>/dev/null | grep -qw "$provider" && return 0
+    # (review fix) dedup on the pool's provider_name field (garm 0.2.1 pool-list
+    # has no provider column, so a table grep would only match via the tags).
+    garm_cli pool list "$entity_flag" "$entity_id" --format json \
+        | provider="$provider" python -c \
+            "import json,os,sys; sys.exit(0 if any(p.get('provider_name')==os.environ['provider'] for p in json.load(sys.stdin) or []) else 1)" \
+        && return 0
     log "creating pool for $provider (flavor $flavor)"
     garm_cli pool add "$entity_flag" "$entity_id" --enabled=true \
         --provider-name "$provider" --flavor "$flavor" --image "$RUNNER_IMAGE" \
@@ -415,7 +443,7 @@ Add after the header comment (before the auth `case`):
 [[ $HOST_ROLE == controller ]] || return 0
 ```
 
-Note the pool-existence guard now greps for the **provider** name (unique per pool here) rather than the flavor, since multiple providers share the same flavor.
+Note the pool-existence guard keys on the pool's **`provider_name`** field (unique per pool here, parsed from `--format json`) rather than the flavor, since multiple providers share the same flavor. A JSON field lookup is used because garm 0.2.1 `pool list` has no provider column in its table output.
 
 **Step 2: Verify + commit**
 

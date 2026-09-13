@@ -72,8 +72,11 @@ add_provider_block "local_vm" "Local Incus - VMs" /etc/garm/garm-provider-incus-
 # (REMOTE_HOSTS is a deliberately space-separated list — word-split it)
 for entry in $REMOTE_HOSTS; do
     IFS='|' read -r rname rurl rcert <<<"$entry"
-    if [[ ! -r $rcert ]]; then
-        warn "server cert for '$rname' missing at $rcert — skipping (copy it, then: sudo ./setup.sh 60)"
+    # The provider reads this cert at runtime as the garm user (not root), so
+    # verify garm itself can read it — a root-only cert outside /etc/garm would
+    # pass a root readability check here yet fail the provider later.
+    if ! sudo -u garm test -r "$rcert"; then
+        warn "server cert for '$rname' unreadable by garm at $rcert — skipping (copy it, then: sudo ./setup.sh 60)"
         continue
     fi
     tok=$(sanitize "$rname")
@@ -134,7 +137,13 @@ changed=1
 printf '%s\n' "$new" > /etc/garm/config.toml
 
 chown -R garm:garm /etc/garm
-chmod 0640 /etc/garm/*.toml /etc/garm/.garm-secrets
+# The secrets sidecar is source'd by root on every run and garm never reads it
+# (secrets reach garm through config.toml). Keep it root-only so a compromised
+# garm user — this host's network-facing daemon runs as garm — cannot plant
+# shell in it that would execute as root on the next `sudo ./setup.sh`.
+chown root:root /etc/garm/.garm-secrets
+chmod 0640 /etc/garm/*.toml
+chmod 0600 /etc/garm/.garm-secrets
 umask "$prev_umask"
 
 if [[ $changed -eq 1 ]]; then

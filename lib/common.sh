@@ -20,6 +20,15 @@ load_config() {
     [[ -f $cfg ]] || die "config.env not found — cp config.env.example config.env and edit it"
     # shellcheck source=/dev/null
     source "$cfg"
+    # Upgrade-safe defaults for the multi-host vars added after a config.env may
+    # already exist — an older config.env predating them would otherwise trip
+    # `set -u` ("HOST_ROLE: unbound variable"). Only the new vars get defaults.
+    HOST_ROLE="${HOST_ROLE:-controller}"
+    GARM_CLIENT_CERT="${GARM_CLIENT_CERT:-/etc/garm/incus-client.crt}"
+    GARM_CLIENT_KEY="${GARM_CLIENT_KEY:-/etc/garm/incus-client.key}"
+    REMOTE_HOSTS="${REMOTE_HOSTS:-}"
+    INCUS_HTTPS_ADDRESS="${INCUS_HTTPS_ADDRESS:-[::]:8443}"
+    CONTROLLER_CLIENT_CERT="${CONTROLLER_CLIENT_CERT:-/root/incus-client.crt}"
 }
 
 # incus_missing <kind> <name> — true if the object doesn't exist yet

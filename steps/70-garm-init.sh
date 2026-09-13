@@ -116,7 +116,12 @@ providers=$(garm_cli provider list --format json |
 
 add_pool() {
     local provider=$1 flavor=$2 tags=$3
-    garm_cli pool list "$entity_flag" "$entity_id" 2>/dev/null | grep -qw "$provider" && return 0
+    # Dedup on the pool's provider_name field (garm 0.2.1 pool-list has no
+    # provider column, so a table grep would only match via the tags column).
+    garm_cli pool list "$entity_flag" "$entity_id" --format json \
+        | provider="$provider" python -c \
+            "import json,os,sys; sys.exit(0 if any(p.get('provider_name')==os.environ['provider'] for p in json.load(sys.stdin) or []) else 1)" \
+        && return 0
     log "creating pool for $provider (flavor $flavor)"
     garm_cli pool add "$entity_flag" "$entity_id" --enabled=true \
         --provider-name "$provider" --flavor "$flavor" --image "$RUNNER_IMAGE" \

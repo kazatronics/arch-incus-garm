@@ -201,10 +201,14 @@ GARM reachability: runners fetch their metadata and post callbacks to
   installation id / private-key path); gitignored, keep it that way. With the
   App, the private key itself stays wherever you put the `.pem`; GARM copies it
   into its encrypted DB when the credential is added
-- `/etc/garm/.garm-secrets` — the generated JWT secret and database passphrase
-  (owned by `garm`, mode 0600). They are created once and reused, so
-  `config.toml` can be regenerated on every run — e.g. when you add a compute
-  host — without rotating the DB passphrase (which would break the encrypted DB)
+- `/etc/garm/.garm-secrets` — the generated JWT secret and database passphrase.
+  It is **root-only** (owned by `root`, mode 0600): root `source`s it each run,
+  and `garm` never reads it (the secrets reach garm through `config.toml`), so
+  keeping it out of garm's reach prevents a compromised garm user from planting
+  code that would run as root on the next `sudo ./setup.sh`. They are created
+  once and reused, so `config.toml` can be regenerated on every run — e.g. when
+  you add a compute host — without rotating the DB passphrase (which would break
+  the encrypted DB)
 - `/etc/garm/config.toml` — regenerated from those secrets each run (owned by
   `garm`, mode 0640); garm restarts only when the file actually changes
 - `/etc/garm/incus-client.{crt,key}` (controller) — the client cert/key GARM

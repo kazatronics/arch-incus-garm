@@ -3,6 +3,8 @@
 # socket; membership in incus-admin grants the full API. A sysusers.d drop-in
 # keeps this declarative and reprovision-safe.
 
+[[ $HOST_ROLE == controller ]] || return 0
+
 if ! id -nG garm 2>/dev/null | grep -qw incus-admin; then
     log "adding garm to incus-admin via sysusers.d"
     install -d /etc/sysusers.d

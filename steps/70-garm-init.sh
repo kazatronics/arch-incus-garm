@@ -7,6 +7,8 @@
 # cannot use a runner *registration* token — GARM mints those itself for each
 # ephemeral runner, which requires admin-level credentials.
 
+[[ $HOST_ROLE == controller ]] || return 0
+
 case "$GITHUB_AUTH_TYPE" in
     "")
         warn "GITHUB_AUTH_TYPE empty — skipping garm bootstrap (rerun: sudo ./setup.sh 70)"
@@ -108,10 +110,14 @@ extra_specs=$(cat <<EOF
 EOF
 )
 
+# derive pools from the providers garm actually loaded
+providers=$(garm_cli provider list --format json |
+    python -c "import json,sys; print(' '.join(p['name'] for p in json.load(sys.stdin) or []))")
+
 add_pool() {
     local provider=$1 flavor=$2 tags=$3
-    garm_cli pool list "$entity_flag" "$entity_id" 2>/dev/null | grep -qw "$flavor" && return 0
-    log "creating $flavor pool"
+    garm_cli pool list "$entity_flag" "$entity_id" 2>/dev/null | grep -qw "$provider" && return 0
+    log "creating pool for $provider (flavor $flavor)"
     garm_cli pool add "$entity_flag" "$entity_id" --enabled=true \
         --provider-name "$provider" --flavor "$flavor" --image "$RUNNER_IMAGE" \
         --min-idle-runners "$POOL_MIN_IDLE" --max-runners "$POOL_MAX_RUNNERS" \
@@ -119,8 +125,13 @@ add_pool() {
         --extra-specs "$extra_specs"
 }
 
-add_pool incus_ct runner-ct "self-hosted,linux,incus,container"
-add_pool incus_vm runner-vm "self-hosted,linux,incus,vm"
+for provider in $providers; do
+    case "$provider" in
+        *_ct) add_pool "$provider" runner-ct "self-hosted,linux,incus,container,${provider}" ;;
+        *_vm) add_pool "$provider" runner-vm "self-hosted,linux,incus,vm,${provider}" ;;
+        *)    warn "provider $provider has no _ct/_vm suffix — skipping pool" ;;
+    esac
+done
 
 log "pools:"
 garm_cli pool list "$entity_flag" "$entity_id"

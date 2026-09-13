@@ -26,3 +26,6 @@ load_config() {
 incus_missing() { ! incus "$1" show "$2" &>/dev/null; }
 
 as_user() { sudo -u "$SUDO_USER" -- "$@"; }
+
+# provider/pool names must be alphanumeric+underscore; map a host name to one
+sanitize() { printf '%s' "${1//[^a-zA-Z0-9]/_}"; }

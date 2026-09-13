@@ -2,7 +2,13 @@
 # Repo packages + AUR packages (garm-bin, garm-provider-incus-bin).
 
 log "installing repo packages"
-pacman -S --needed --noconfirm incus btrfs-progs git base-devel python
+pacman -S --needed --noconfirm incus btrfs-progs
+
+# Only the controller builds/runs garm and the provider binary, and only it
+# needs python (step 70) and the AUR build toolchain.
+if [[ $HOST_ROLE == controller ]]; then
+    pacman -S --needed --noconfirm git base-devel python
+fi
 
 aur_install() {
     local pkg=$1 bdir pkgfile deps
@@ -36,5 +42,7 @@ aur_install() {
     rm -rf "$bdir"
 }
 
-aur_install garm-bin
-aur_install garm-provider-incus-bin
+if [[ $HOST_ROLE == controller ]]; then
+    aur_install garm-bin
+    aur_install garm-provider-incus-bin
+fi
